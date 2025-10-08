@@ -1,0 +1,420 @@
+// Prisma schema for Rental Host Certification Platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  HOST
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+enum ApplicationStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  MORE_INFO_REQUESTED
+}
+
+enum ApplicationStep {
+  PROPERTY_DETAILS
+  COMPLIANCE_CHECKLIST
+  DOCUMENT_UPLOAD
+  PAYMENT
+  SUBMISSION
+}
+
+enum CertificationStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum DocumentType {
+  ID_DOCUMENT
+  SAFETY_PERMIT
+  INSURANCE_CERTIFICATE
+  PROPERTY_DEED
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum NotificationType {
+  APPLICATION_STATUS
+  CERTIFICATION_EXPIRY
+  ADMIN_MESSAGE
+  SYSTEM_ALERT
+  PAYMENT_CONFIRMATION
+}
+
+enum SupportTicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum SupportTicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum SupportTicketCategory {
+  GENERAL
+  APPLICATION
+  CERTIFICATION
+  PAYMENT
+  TECHNICAL
+  ACCOUNT
+}
+
+// User model for authentication
+model User {
+  id                    Int                   @id @default(autoincrement())
+  email                 String                @unique
+  password              String
+  name                  String
+  firstName             String?
+  lastName              String?
+  companyName           String?
+  phone                 String?
+  isEmail               Boolean               @default(true)
+  isNotification        Boolean               @default(true)
+  role                  UserRole              @default(HOST)
+  status                UserStatus            @default(PENDING_VERIFICATION)
+  emailVerified         Boolean               @default(false)
+  emailVerificationToken String?
+  resetPasswordToken    String?
+  resetPasswordExpires  DateTime?
+  mfaEnabled            Boolean               @default(false)
+  mfaSecret             String?
+  lastLoginAt           DateTime?
+  fcmToken              String?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  
+  twoFA                 TwoFA?
+  // Relations
+  applications          Application[]
+  certifications        Certification[]
+  payments              Payment[]
+  notifications         Notification[]
+  auditLogs             AuditLog[]
+  reviewedApplications  Application[]         @relation("ApplicationReviewer")
+  revokedCertifications Certification[]       @relation("CertificationRevoker")
+  supportTickets        SupportTicket[]
+  assignedTickets       SupportTicket[]       @relation("TicketAssignee")
+  // Back-reference for SuperAdminCertificate creator
+  createdCertificates   SuperAdminCertificate[] @relation("UserCreatedCertificates")
+  @@map("users")
+}
+
+model TwoFA {
+  id         Int      @id @default(autoincrement())
+  userId     Int      @unique
+  otp        String
+  expiresAt  DateTime
+  isVerified Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("two_fa")
+}
+
+model Application {
+  id                    String                @id @default(uuid())
+  hostId                Int
+  status                ApplicationStatus     @default(DRAFT)
+  currentStep           ApplicationStep       @default(PROPERTY_DETAILS)
+  propertyDetails       Json?
+  submittedAt           DateTime?
+  reviewedBy            Int?
+  reviewedAt            DateTime?
+  reviewNotes           String?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  deletedAt             DateTime?
+  
+  // Relations
+  host                  User                  @relation(fields: [hostId], references: [id])
+  reviewer              User?                 @relation("ApplicationReviewer", fields: [reviewedBy], references: [id])
+  documents             Document[]
+  payments              Payment[]
+  certification         Certification?
+  images                Image[]
+  complianceItems       ComplianceChecklist[]
+  
+  @@map("applications")
+}
+
+model Certification {
+  id                    String                @id @default(uuid())
+  applicationId         String                @unique
+  hostId                Int
+  certificateNumber     String                @unique
+  status                CertificationStatus   @default(ACTIVE)
+  issuedAt              DateTime              @default(now())
+  expiresAt             DateTime
+  revokedAt             DateTime?
+  revokedBy             Int?
+  revokeReason          String?
+  badgeUrl              String?
+  qrCodeUrl             String?
+  qrCodeData            String                @unique
+  verificationUrl       String
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  
+  // Relations
+  application           Application           @relation(fields: [applicationId], references: [id])
+  host                  User                  @relation(fields: [hostId], references: [id])
+  revoker               User?                 @relation("CertificationRevoker", fields: [revokedBy], references: [id])
+  
+  @@map("certifications")
+}
+
+model Document {
+  id                    String                @id @default(uuid())
+  applicationId         String
+  fileName              String
+  originalName          String
+  mimeType              String
+  size                  Int
+  url                   String
+  documentType          DocumentType
+  uploadedAt            DateTime              @default(now())
+  
+  // Relations
+  application           Application           @relation(fields: [applicationId], references: [id])
+  
+  @@map("documents")
+}
+
+model Checklist {
+  id              String        @id @default(uuid())
+  propertyTypeId  String
+  name            String
+  description     String?
+  checked         Boolean       @default(false)
+
+  // Relations
+  propertyType    PropertyType  @relation(fields: [propertyTypeId], references: [id], onDelete: Cascade)
+  complianceItems ComplianceChecklist[]
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@map("checklists")
+}
+
+model PropertyType {
+  
+  id          String      @id @default(uuid())
+  name        String      @unique
+  description String?
+  isActive    Boolean     @default(true)
+
+  // Relations
+  checklists  Checklist[]
+  templates   SuperAdminCertificate[]
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@map("property_types")
+}
+
+
+model ComplianceChecklist {
+  id             String       @id @default(uuid())
+  applicationId  String
+  checklistId    String
+  checked        Boolean      @default(false)
+  checkedAt      DateTime?
+  notes          String?
+
+  // Relations
+  application    Application  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  checklist      Checklist    @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([applicationId, checklistId])
+  @@map("compliance_checklists")
+}
+
+model SuperAdminCertificate {
+  id             String       @id @default(uuid())
+  propertyTypeId String
+  name           String
+  description    String?
+  imageUrl       String?
+  validityMonths Int          @default(12)
+  isActive       Boolean      @default(true)
+  createdBy      Int
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  // Relations
+  propertyType   PropertyType @relation(fields: [propertyTypeId], references: [id], onDelete: Cascade)
+  createdByUser  User         @relation("UserCreatedCertificates", fields: [createdBy], references: [id])
+
+  @@unique([propertyTypeId, isActive])
+  @@map("super_admin_certificates")
+}
+
+model Payment {
+  id                    String                @id @default(uuid())
+  applicationId         String
+  hostId                Int
+  amount                Decimal               @db.Decimal(10, 2)
+  currency              String                @default("USD")
+  status                PaymentStatus         @default(PENDING)
+  paymentMethod         String?
+  gatewayTransactionId  String?
+  gatewayResponse       Json?
+  refundedAmount        Decimal?              @db.Decimal(10, 2)
+  refundedAt            DateTime?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  
+  // Relations
+  application           Application           @relation(fields: [applicationId], references: [id])
+  host                  User                  @relation(fields: [hostId], references: [id])
+  
+  @@map("payments")
+}
+
+model Notification {
+  id                    String                @id @default(uuid())
+  userId                Int
+  type                  NotificationType
+  title                 String
+  message               String
+  data                  Json?
+  read                  Boolean               @default(false)
+  readAt                DateTime?
+  createdAt             DateTime              @default(now())
+  
+  // Relations
+  user                  User                  @relation(fields: [userId], references: [id])
+  
+  @@map("notifications")
+}
+
+model AuditLog {
+  id                    String                @id @default(uuid())
+  userId                Int?
+  action                String
+  resource              String
+  resourceId            String?
+  oldValues             Json?
+  newValues             Json?
+  ipAddress             String?
+  userAgent             String?
+  severity              String?               @default("MEDIUM")
+  status                String?               @default("SUCCESS")
+  metadata              Json?
+  createdAt             DateTime              @default(now())
+
+  // Relations
+  user                  User?                 @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+model SupportTicket {
+  id                    String                @id @default(uuid())
+  userId                Int
+  subject               String
+  description           String
+  category              SupportTicketCategory @default(GENERAL)
+  priority              SupportTicketPriority @default(MEDIUM)
+  status                SupportTicketStatus   @default(OPEN)
+  assignedTo            Int?
+  attachmentUrls        Json?                 // Array of uploaded file URLs
+  tags                  Json?                 // Array of tags for organization
+  resolution            String?
+  resolvedAt            DateTime?
+  closedAt              DateTime?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  // Relations
+  user                  User                  @relation(fields: [userId], references: [id])
+  assignee              User?                 @relation("TicketAssignee", fields: [assignedTo], references: [id])
+
+  @@map("support_tickets")
+}
+
+model FAQ {
+  id                    String                @id @default(uuid())
+  question              String                @unique
+  answer                String
+  category              String
+  tags                  Json?                 // Array of search tags
+  isPublished           Boolean               @default(true)
+  viewCount             Int                   @default(0)
+  helpfulCount          Int                   @default(0)
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  @@map("faqs")
+}
+
+model SystemConfig {
+  id                    Int                   @id @default(autoincrement())
+  key                   String                @unique
+  value                 Json
+  description           String?
+  updatedBy             Int?
+  updatedAt             DateTime              @updatedAt
+  
+  @@map("system_config")
+}
+
+// Indexes for performance optimization
+// Note: These are automatically created by Prisma for foreign keys and unique fields
+
+model Image {
+  id             String   @id @default(uuid())
+  applicationId  String
+  name           String
+  key            String   @unique
+  url            String
+  mimeType       String?
+  size           Int?
+  uploadedAt     DateTime @default(now())
+
+  // Relations
+  application    Application @relation(fields: [applicationId], references: [id])
+
+  @@map("images")
+}
