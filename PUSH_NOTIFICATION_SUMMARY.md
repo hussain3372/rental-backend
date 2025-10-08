@@ -56,7 +56,7 @@
 
 ### Prerequisites
 1. Firebase project with Cloud Messaging enabled
-2. Service account key file (`firebase-service-account.json`)
+2. Service account key file (`firebase-service-account.js`)
 3. Environment variables configured
 4. Database migration applied
 
@@ -136,7 +136,7 @@ node test-push-notifications.js
 ### Environment Variables
 ```env
 FIREBASE_PROJECT_ID=your-firebase-project-id
-FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
+FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.js
 ```
 
 ## 🛠️ Troubleshooting
@@ -179,4 +179,4 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 
 - **Testing Guide**: `PUSH_NOTIFICATION_TESTING.md`
 - **Test Script**: `test-push-notifications.js`
-- **Service Account Example**: `firebase-service-account.json.example`
+- **Service Account Example**: `firebase-service-account.js.example`

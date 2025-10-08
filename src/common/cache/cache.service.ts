@@ -9,30 +9,31 @@ export class CacheService {
   private isRedisReady = false;
   private useInMemory = false;
 
-  // Simple in-memory cache fallback with TTL support
   private memoryStore = new Map<
     string,
     { value: string; expiresAt: number | null }
   >();
   private memoryCleanupInterval: NodeJS.Timeout | null = null;
   private lastRedisErrorAt = 0;
-  private readonly errorThrottleMs = 2000; // throttle repeated error logs
+  private readonly errorThrottleMs = 2000;
 
   constructor(private configService: ConfigService) {
-    this.initializeRedis();
+    // Use nextTick to avoid blocking Nest's bootstrap
+    process.nextTick(() => this.initializeRedis());
   }
 
   private async initializeRedis() {
     const disableRedis = this.configService.get<string>('DISABLE_REDIS');
-    const redisUrl = this.configService.get<string>('REDIS_URL', 'redis://localhost:6379');
+    const redisUrl =
+      this.configService.get<string>('REDIS_URL') || 'redis://localhost:6379';
 
-    if (disableRedis === 'true' || disableRedis === '1') {
-      this.enableInMemoryFallback('Redis disabled via env (DISABLE_REDIS)');
-      return;
-    }
-
-    if (!redisUrl) {
-      this.enableInMemoryFallback('REDIS_URL not set');
+    // ✅ Disable Redis explicitly for Render or missing URL
+    if (disableRedis === 'true' || disableRedis === '1' || !redisUrl) {
+      this.enableInMemoryFallback(
+        disableRedis === 'true'
+          ? 'Redis disabled via env (DISABLE_REDIS)'
+          : 'No REDIS_URL provided'
+      );
       return;
     }
 
@@ -45,6 +46,11 @@ export class CacheService {
           this.lastRedisErrorAt = now;
           this.logger.error(`Redis client error: ${this.stringifyError(err)}`);
         }
+
+        // ⚠️ Switch to in-memory after repeated connection errors
+        if (!this.isRedisReady) {
+          this.enableInMemoryFallback('Redis connection failed');
+        }
       });
 
       this.client.on('connect', () => {
@@ -54,18 +60,23 @@ export class CacheService {
 
       this.client.on('end', () => {
         this.isRedisReady = false;
-        this.logger.warn('Redis connection ended. Using in-memory cache until reconnected.');
-        this.ensureMemoryCleanup();
+        this.logger.warn(
+          'Redis connection ended. Switching to in-memory cache.'
+        );
+        this.enableInMemoryFallback('Redis connection ended');
       });
 
       await this.client.connect();
       this.isRedisReady = true;
     } catch (error) {
-      this.enableInMemoryFallback(`Failed to connect to Redis: ${this.stringifyError(error)}`);
+      this.enableInMemoryFallback(
+        `Failed to connect to Redis: ${this.stringifyError(error)}`
+      );
     }
   }
 
   private enableInMemoryFallback(reason: string) {
+    if (this.useInMemory) return; // prevent duplicate logs
     this.useInMemory = true;
     this.isRedisReady = false;
     this.client = null;
@@ -78,7 +89,7 @@ export class CacheService {
     this.memoryCleanupInterval = setInterval(() => {
       const now = Date.now();
       for (const [key, entry] of this.memoryStore.entries()) {
-        if (entry.expiresAt !== null && entry.expiresAt <= now) {
+        if (entry.expiresAt && entry.expiresAt <= now) {
           this.memoryStore.delete(key);
         }
       }
@@ -101,7 +112,9 @@ export class CacheService {
         this.logger.log('🔌 Disconnected from Redis');
       }
     } catch (error) {
-      this.logger.error(`Error disconnecting from Redis: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error disconnecting from Redis: ${this.stringifyError(error)}`
+      );
     } finally {
       if (this.memoryCleanupInterval) {
         clearInterval(this.memoryCleanupInterval);
@@ -125,7 +138,9 @@ export class CacheService {
         await this.client.set(key, serializedValue);
       }
     } catch (error) {
-      this.logger.error(`Error setting cache key: ${key}: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error setting cache key: ${key}: ${this.stringifyError(error)}`
+      );
     }
   }
 
@@ -143,7 +158,9 @@ export class CacheService {
       const value = await this.client.get(key);
       return value ? JSON.parse(value) : null;
     } catch (error) {
-      this.logger.error(`Error getting cache key: ${key}: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error getting cache key: ${key}: ${this.stringifyError(error)}`
+      );
       return null;
     }
   }
@@ -156,7 +173,9 @@ export class CacheService {
       const result = await this.client.del(key);
       return result > 0;
     } catch (error) {
-      this.logger.error(`Error deleting cache key: ${key}: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error deleting cache key: ${key}: ${this.stringifyError(error)}`
+      );
       return false;
     }
   }
@@ -175,7 +194,9 @@ export class CacheService {
       const result = await this.client.exists(key);
       return result > 0;
     } catch (error) {
-      this.logger.error(`Error checking cache key: ${key}: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error checking cache key: ${key}: ${this.stringifyError(error)}`
+      );
       return false;
     }
   }
@@ -192,7 +213,9 @@ export class CacheService {
       const result = await this.client.expire(key, ttl);
       return result === true;
     } catch (error) {
-      this.logger.error(`Error setting expiry for key: ${key}: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error setting expiry for key: ${key}: ${this.stringifyError(error)}`
+      );
       return false;
     }
   }
@@ -223,7 +246,9 @@ export class CacheService {
 
       await pipeline.exec();
     } catch (error) {
-      this.logger.error(`Error setting multiple cache keys: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error setting multiple cache keys: ${this.stringifyError(error)}`
+      );
     }
   }
 
@@ -251,7 +276,9 @@ export class CacheService {
       });
       return result;
     } catch (error) {
-      this.logger.error(`Error getting multiple cache keys: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error getting multiple cache keys: ${this.stringifyError(error)}`
+      );
       return {};
     }
   }
@@ -268,7 +295,9 @@ export class CacheService {
       const result = await this.client.del(keys);
       return result;
     } catch (error) {
-      this.logger.error(`Error deleting multiple cache keys: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error deleting multiple cache keys: ${this.stringifyError(error)}`
+      );
       return 0;
     }
   }
@@ -301,7 +330,9 @@ export class CacheService {
       });
       return result;
     } catch (error) {
-      this.logger.error(`Error getting keys by pattern: ${pattern}: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error getting keys by pattern: ${pattern}: ${this.stringifyError(error)}`
+      );
       return {};
     }
   }
@@ -324,7 +355,9 @@ export class CacheService {
       const result = await this.client.del(keys);
       return result;
     } catch (error) {
-      this.logger.error(`Error deleting keys by pattern: ${pattern}: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error deleting keys by pattern: ${pattern}: ${this.stringifyError(error)}`
+      );
       return 0;
     }
   }
@@ -337,7 +370,9 @@ export class CacheService {
       await this.client.ping();
       return true;
     } catch (error) {
-      this.logger.error(`Redis health check failed: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Redis health check failed: ${this.stringifyError(error)}`
+      );
       return false;
     }
   }
@@ -346,7 +381,7 @@ export class CacheService {
   async remember<T>(
     key: string,
     callback: () => Promise<T>,
-    ttl: number,
+    ttl: number
   ): Promise<T> {
     const cached = await this.get<T>(key);
     if (cached !== null) {
@@ -364,7 +399,9 @@ export class CacheService {
         await this.deleteByPattern(pattern);
       }
     } catch (error) {
-      this.logger.error(`Error invalidating cache: ${this.stringifyError(error)}`);
+      this.logger.error(
+        `Error invalidating cache: ${this.stringifyError(error)}`
+      );
     }
   }
 

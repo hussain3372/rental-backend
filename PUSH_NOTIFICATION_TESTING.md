@@ -13,14 +13,14 @@
    - Go to Project Settings > Service Accounts
    - Click "Generate new private key"
    - Download the JSON file
-   - Rename it to `firebase-service-account.json`
+   - Rename it to `firebase-service-account.js`
    - Place it in the project root directory
 
 3. **Environment Variables:**
    Add these to your `.env` file:
    ```env
    FIREBASE_PROJECT_ID=your-firebase-project-id
-   FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
+   FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.js
    ```
 
 ### 2. Database Setup
@@ -131,7 +131,7 @@ Authorization: Bearer {{token}}
 ## Troubleshooting
 
 ### Firebase Not Initialized
-- Check if `firebase-service-account.json` exists
+- Check if `firebase-service-account.js` exists
 - Verify `FIREBASE_PROJECT_ID` in environment
 - Check logs for Firebase initialization errors
 
