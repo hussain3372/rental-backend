@@ -1,6 +1,8 @@
 // src/modules/notification/fcm.service.ts
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import * as admin from 'firebase-admin';
+import * as fs from 'fs';
+import * as path from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import { EnhancedLoggerService } from '../../common/logger/enhanced-logger.service';
@@ -39,63 +41,141 @@ export class FCMService implements OnModuleInit {
 
   private initializeFirebase() {
     try {
+      const disableFcm = this.configService.get<string>('DISABLE_FCM');
+      if (disableFcm === 'true' || disableFcm === '1') {
+        this.logger.warn('[FCMService] FCM disabled via DISABLE_FCM env; skipping initialization');
+        return;
+      }
+      
       // Check if already initialized
       if (admin.apps.length > 0) {
         this.firebaseApp = admin.app();
         this.logger.log('[FCMService] Firebase Admin SDK already initialized');
         return;
       }
-
-      const serviceAccountPath = this.configService.get<string>(
-        'FIREBASE_SERVICE_ACCOUNT_PATH'
-      );
-      const projectId = this.configService.get<string>('FIREBASE_PROJECT_ID');
-
-      this.logger.debug(
-        `[FCMService] FIREBASE_SERVICE_ACCOUNT_PATH: ${serviceAccountPath}`
-      );
-      this.logger.debug(`[FCMService] FIREBASE_PROJECT_ID: ${projectId}`);
-
-      if (!serviceAccountPath || !projectId) {
-        this.logger.warn(
-          '[FCMService] Firebase configuration not found. Push notifications will be disabled.'
-        );
+  
+      // FIXED: Separate variables for path and JSON
+      const serviceAccountPath = this.configService.get<string>('FIREBASE_SERVICE_ACCOUNT_PATH');
+      const inlineServiceAccountJson = this.configService.get<string>('FIREBASE_SERVICE_ACCOUNT_JSON');
+      const projectIdFromEnv = this.configService.get<string>('FIREBASE_PROJECT_ID');
+  
+      this.logger.debug(`[FCMService] FIREBASE_SERVICE_ACCOUNT_PATH: ${serviceAccountPath ? '***SET***' : 'not set'}`);
+      this.logger.debug(`[FCMService] FIREBASE_SERVICE_ACCOUNT_JSON: ${inlineServiceAccountJson ? '***SET***' : 'not set'}`);
+      this.logger.debug(`[FCMService] FIREBASE_PROJECT_ID: ${projectIdFromEnv}`);
+  
+      let serviceAccount: any = null;
+  
+      // 1) If FIREBASE_SERVICE_ACCOUNT_JSON is provided, prefer it (JSON or base64 of JSON)
+      if (inlineServiceAccountJson) {
+        try {
+          // Clean up the JSON string (remove extra spaces, newlines outside strings)
+          let cleanedJson = inlineServiceAccountJson.trim();
+          
+          // Try base64 decode first
+          const maybeJson = this.tryBase64Decode(cleanedJson);
+          
+          serviceAccount = JSON.parse(maybeJson);
+          this.logger.debug('[FCMService] ✅ Loaded service account from FIREBASE_SERVICE_ACCOUNT_JSON');
+        } catch (e) {
+          this.logger.error('[FCMService] ❌ Invalid FIREBASE_SERVICE_ACCOUNT_JSON', (e as any)?.message);
+          this.logger.debug('[FCMService] JSON parse error details:', (e as any)?.stack);
+          serviceAccount = null;
+        }
+      }
+  
+      // 2) Else, attempt to build from individual env vars (Render-friendly)
+      if (!serviceAccount) {
+        const type = this.configService.get<string>('FIREBASE_TYPE');
+        const privateKeyId = this.configService.get<string>('FIREBASE_PRIVATE_KEY_ID');
+        let privateKey = this.configService.get<string>('FIREBASE_PRIVATE_KEY');
+        const clientEmail = this.configService.get<string>('FIREBASE_CLIENT_EMAIL');
+        const clientId = this.configService.get<string>('FIREBASE_CLIENT_ID');
+        const authUri = this.configService.get<string>('FIREBASE_AUTH_URI');
+        const tokenUri = this.configService.get<string>('FIREBASE_TOKEN_URI');
+        const authProviderCertUrl = this.configService.get<string>('FIREBASE_AUTH_PROVIDER_CERT_URL');
+        const clientCertUrl = this.configService.get<string>('FIREBASE_CLIENT_CERT_URL');
+        const universeDomain = this.configService.get<string>('FIREBASE_UNIVERSE_DOMAIN');
+  
+        if (type && privateKey && clientEmail) {
+          // Render env often escapes newlines as \n, convert them back
+          privateKey = privateKey.replace(/\\n/g, '\n');
+  
+          serviceAccount = {
+            type,
+            project_id: projectIdFromEnv,
+            private_key_id: privateKeyId,
+            private_key: privateKey,
+            client_email: clientEmail,
+            client_id: clientId,
+            auth_uri: authUri,
+            token_uri: tokenUri,
+            auth_provider_x509_cert_url: authProviderCertUrl,
+            client_x509_cert_url: clientCertUrl,
+            universe_domain: universeDomain,
+          };
+  
+          this.logger.debug('[FCMService] ✅ Built service account from individual FIREBASE_* env vars');
+        }
+      }
+  
+      // 3) Else, try to load from a file path if provided (Dev only)
+      if (!serviceAccount && serviceAccountPath) {
+        try {
+          const resolvedPath = path.isAbsolute(serviceAccountPath)
+            ? serviceAccountPath
+            : path.resolve(process.cwd(), serviceAccountPath);
+  
+          this.logger.debug(`[FCMService] Attempting to load service account file from: ${resolvedPath}`);
+          const fileContent = fs.readFileSync(resolvedPath, 'utf8');
+          serviceAccount = JSON.parse(fileContent);
+          this.logger.debug('[FCMService] ✅ Service account file loaded successfully');
+        } catch (fileErr) {
+          this.logger.error('[FCMService] ❌ Could not load Firebase service account file.', (fileErr as any)?.message);
+          serviceAccount = null;
+        }
+      }
+  
+      // 4) If still no service account, disable push (don't crash the app)
+      if (!serviceAccount) {
+        this.logger.warn('[FCMService] ⚠️  Firebase service account not configured. Push notifications disabled.');
         return;
       }
-
-      // Try to load service account
-      let serviceAccount;
-      try {
-        this.logger.debug(
-          `[FCMService] Attempting to load service account file from: ${serviceAccountPath}`
-        );
-        serviceAccount = require(serviceAccountPath);
-        this.logger.debug(
-          '[FCMService] Service account file loaded successfully'
-        );
-      } catch (requireError) {
-        this.logger.error(
-          '[FCMService] ❌ Could not load Firebase service account file.',
-          requireError.stack
-        );
+  
+      const projectId = projectIdFromEnv || serviceAccount.project_id;
+  
+      if (!projectId) {
+        this.logger.warn('[FCMService] ⚠️  Missing projectId for Firebase Admin SDK. Push notifications disabled.');
         return;
       }
-
+  
       // Initialize Firebase Admin SDK
       this.firebaseApp = admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
         projectId: projectId,
       });
-
-      this.logger.log(
-        '[FCMService] ✅ Firebase Admin SDK initialized successfully'
-      );
+  
+      this.logger.log('[FCMService] ✅ Firebase Admin SDK initialized successfully');
     } catch (error) {
-      this.logger.error(
-        '[FCMService] ❌ Failed to initialize Firebase Admin SDK',
-        error.stack
-      );
+      this.logger.error('[FCMService] ❌ Failed to initialize Firebase Admin SDK', error.stack);
     }
+  }
+  
+  /**
+   * Try to decode a base64 string, or return as-is if not base64
+   */
+  private tryBase64Decode(str: string): string {
+    try {
+      // Check if it looks like base64 (basic heuristic)
+      if (/^[A-Za-z0-9+/]+=*$/.test(str.replace(/\s/g, ''))) {
+        const decoded = Buffer.from(str, 'base64').toString('utf8');
+        // Validate it's valid JSON after decoding
+        JSON.parse(decoded);
+        return decoded;
+      }
+    } catch (e) {
+      // If decoding fails, return original
+    }
+    return str;
   }
 
   /**
